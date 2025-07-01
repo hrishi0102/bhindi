@@ -20,29 +20,15 @@ export class AppController {
     const params = req.body;
 
     try {
-      // All deployment tools require authentication
-      const token = this.extractBearerToken(req);
-      if (!token) {
+      // All deployment tools require authentication via headers
+      const tokens = this.extractTokensFromHeaders(req);
+      if (!tokens) {
         const errorResponse = new BaseErrorResponseDto(
-          'Deployment tools require authentication. Please provide Bearer token in format "github_token:vercel_token"',
+          'Deployment tools require authentication. Please provide x-github and x-vercel headers',
           401,
-          'Missing Authorization header with Bearer token'
+          'Missing x-github and/or x-vercel headers'
         );
         res.status(401).json(errorResponse);
-        return;
-      }
-
-      // Parse tokens
-      let tokens;
-      try {
-        tokens = this.deploymentService.parseTokens(token);
-      } catch (error: any) {
-        const errorResponse = new BaseErrorResponseDto(
-          error.message,
-          400,
-          'Token format should be "github_token:vercel_token"'
-        );
-        res.status(400).json(errorResponse);
         return;
       }
 
@@ -184,13 +170,26 @@ export class AppController {
   }
 
   /**
-   * Extract Bearer token from request
+   * Extract GitHub and Vercel tokens from headers
    */
-  private extractBearerToken(req: Request): string | null {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      return authHeader.substring(7);
+  private extractTokensFromHeaders(
+    req: Request
+  ): { githubToken: string; vercelToken: string } | null {
+    const githubToken = req.headers['x-github'] as string;
+    const vercelToken = req.headers['x-vercel'] as string;
+
+    if (!githubToken || !vercelToken) {
+      return null;
     }
-    return null;
+
+    // Validate tokens are not empty
+    if (!githubToken.trim() || !vercelToken.trim()) {
+      return null;
+    }
+
+    return {
+      githubToken: githubToken.trim(),
+      vercelToken: vercelToken.trim(),
+    };
   }
 }

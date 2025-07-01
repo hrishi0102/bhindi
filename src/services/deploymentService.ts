@@ -25,26 +25,6 @@ export class DeploymentService {
   }
 
   /**
-   * Parse combined token (github_token:vercel_token)
-   */
-  parseTokens(combinedToken: string): TokenPair {
-    const parts = combinedToken.split(':');
-    if (parts.length !== 2) {
-      throw new Error('Token format should be "github_token:vercel_token"');
-    }
-
-    const [githubToken, vercelToken] = parts;
-    if (!githubToken.trim() || !vercelToken.trim()) {
-      throw new Error('Both GitHub and Vercel tokens are required');
-    }
-
-    return {
-      githubToken: githubToken.trim(),
-      vercelToken: vercelToken.trim(),
-    };
-  }
-
-  /**
    * Generate project name from repository
    */
   private generateProjectName(
