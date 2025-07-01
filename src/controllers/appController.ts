@@ -1,20 +1,15 @@
 import { Request, Response } from 'express';
-import { CalculatorService } from '../services/calculatorService.js';
-import { GitHubService } from '../services/githubService.js';
+import { DeploymentService } from '../services/deploymentService.js';
 import { BaseSuccessResponseDto, BaseErrorResponseDto } from '../types/agent.js';
 
 /**
- * App Controller
- * Handles both calculator tools (public, no auth) and GitHub tools (authenticated)
- * Demonstrates mixed authentication patterns for educational purposes
+ * App Controller for GitHub to Vercel deployment
  */
 export class AppController {
-  private calculatorService: CalculatorService;
-  private githubService: GitHubService;
+  private deploymentService: DeploymentService;
 
   constructor() {
-    this.calculatorService = new CalculatorService();
-    this.githubService = new GitHubService();
+    this.deploymentService = new DeploymentService();
   }
 
   /**
@@ -25,25 +20,40 @@ export class AppController {
     const params = req.body;
 
     try {
-      // Handle Calculator Tools (No Auth Required)
-      if (this.isCalculatorTool(toolName)) {
-        await this.handleCalculatorTool(toolName, params, res);
+      // All deployment tools require authentication
+      const token = this.extractBearerToken(req);
+      if (!token) {
+        const errorResponse = new BaseErrorResponseDto(
+          'Deployment tools require authentication. Please provide Bearer token in format "github_token:vercel_token"',
+          401,
+          'Missing Authorization header with Bearer token'
+        );
+        res.status(401).json(errorResponse);
         return;
       }
 
-      // Handle GitHub Tools (Auth Required)
-      if (this.isGitHubTool(toolName)) {
-        const token = this.extractBearerToken(req);
-        if (!token) {
-          const errorResponse = new BaseErrorResponseDto(
-            'GitHub tools require authentication. Please provide a Bearer token.',
-            401,
-            'Missing Authorization header with Bearer token'
-          );
-          res.status(401).json(errorResponse);
-          return;
-        }
-        await this.handleGitHubTool(toolName, params, token, res);
+      // Parse tokens
+      let tokens;
+      try {
+        tokens = this.deploymentService.parseTokens(token);
+      } catch (error: any) {
+        const errorResponse = new BaseErrorResponseDto(
+          error.message,
+          400,
+          'Token format should be "github_token:vercel_token"'
+        );
+        res.status(400).json(errorResponse);
+        return;
+      }
+
+      // Handle deployment tools
+      if (toolName === 'deployRepo') {
+        await this.handleDeployRepo(tokens, params, res);
+        return;
+      }
+
+      if (toolName === 'getDeploymentStatus') {
+        await this.handleGetDeploymentStatus(tokens.vercelToken, params, res);
         return;
       }
 
@@ -51,10 +61,11 @@ export class AppController {
       const errorResponse = new BaseErrorResponseDto(
         `Unknown tool: ${toolName}`,
         404,
-        `Available tools: ${[...this.getCalculatorTools(), ...this.getGitHubTools()].join(', ')}`
+        'Available tools: deployRepo, getDeploymentStatus'
       );
       res.status(404).json(errorResponse);
     } catch (error) {
+      console.error('Tool execution error:', error);
       const errorResponse = new BaseErrorResponseDto(
         error instanceof Error ? error.message : 'Unknown error occurred',
         500,
@@ -65,140 +76,110 @@ export class AppController {
   }
 
   /**
-   * Handle calculator tool execution
+   * Handle repository deployment
    */
-  private async handleCalculatorTool(toolName: string, params: any, res: Response): Promise<void> {
-    let result: number;
-    let operation: string;
+  private async handleDeployRepo(tokens: any, params: any, res: Response): Promise<void> {
+    // Validate required parameters
+    this.validateDeployRepoParameters(params);
 
-    switch (toolName) {
-      case 'add':
-        this.validateParameters(params, ['a', 'b']);
-        result = this.calculatorService.add(params.a, params.b);
-        operation = `${params.a} + ${params.b}`;
-        break;
-      
-      case 'subtract':
-        this.validateParameters(params, ['a', 'b']);
-        result = this.calculatorService.subtract(params.a, params.b);
-        operation = `${params.a} - ${params.b}`;
-        break;
-      
-      case 'multiply':
-        this.validateParameters(params, ['a', 'b']);
-        result = this.calculatorService.multiply(params.a, params.b);
-        operation = `${params.a} × ${params.b}`;
-        break;
-      
-      case 'divide':
-        this.validateParameters(params, ['a', 'b']);
-        result = this.calculatorService.divide(params.a, params.b);
-        operation = `${params.a} ÷ ${params.b}`;
-        break;
-      
-      case 'power':
-        this.validateParameters(params, ['base', 'exponent']);
-        result = this.calculatorService.power(params.base, params.exponent);
-        operation = `${params.base}^${params.exponent}`;
-        break;
-      
-      case 'sqrt':
-        this.validateParameters(params, ['number']);
-        result = this.calculatorService.sqrt(params.number);
-        operation = `√${params.number}`;
-        break;
-      
-      case 'percentage':
-        this.validateParameters(params, ['percentage', 'of']);
-        result = this.calculatorService.percentage(params.percentage, params.of);
-        operation = `${params.percentage}% of ${params.of}`;
-        break;
-      
-      case 'factorial':
-        this.validateParameters(params, ['number']);
-        result = this.calculatorService.factorial(params.number);
-        operation = `${params.number}!`;
-        break;
-      
-      case 'countCharacter':
-        this.validateCharacterCountParameters(params);
-        result = this.calculatorService.countCharacter(params.character, params.text);
-        operation = `Count '${params.character}' in "${params.text.length > 30 ? params.text.substring(0, 30) + '...' : params.text}"`;
-        break;
-      
-      default:
-        throw new Error(`Unknown calculator tool: ${toolName}`);
-    }
+    try {
+      const result = await this.deploymentService.deployRepository(tokens, {
+        repoUrl: params.repoUrl,
+        projectName: params.projectName,
+        framework: params.framework || 'static',
+      });
 
-    const response = new BaseSuccessResponseDto({
-      operation,
-      result,
-      message: `Calculated ${operation} = ${result}`,
-      tool_type: 'calculator'
-    }, 'mixed');
+      const response = new BaseSuccessResponseDto(
+        {
+          deploymentId: result.deployment.id,
+          deploymentUrl: `https://${result.deployment.url}`,
+          projectName: result.project.name,
+          status: result.deployment.state,
+          message: result.message,
+          repository: params.repoUrl,
+          framework: params.framework || 'static',
+          inspectorUrl: result.deployment.inspectorUrl,
+          tool_type: 'deployment',
+        },
+        'mixed'
+      );
 
-    res.json(response);
-  }
-
-  /**
-   * Handle GitHub tool execution
-   */
-  private async handleGitHubTool(toolName: string, params: any, token: string, res: Response): Promise<void> {
-    switch (toolName) {
-      case 'listUserRepositories':
-        const repositories = await this.githubService.listUserRepositories(token, {
-          per_page: params.per_page,
-          sort: params.sort,
-          direction: params.direction,
-          type: params.type
-        });
-
-        const response = new BaseSuccessResponseDto({
-          ...repositories,
-          tool_type: 'github',
-          authenticated: true
-        }, 'mixed');
-
-        res.json(response);
-        break;
-      
-      default:
-        throw new Error(`Unknown GitHub tool: ${toolName}`);
+      res.json(response);
+    } catch (error: any) {
+      const errorResponse = new BaseErrorResponseDto(error.message, 400, 'Deployment failed');
+      res.status(400).json(errorResponse);
     }
   }
 
   /**
-   * Validate required parameters
+   * Handle deployment status check
    */
-  private validateParameters(params: any, required: string[]): void {
-    for (const param of required) {
-      if (params[param] === undefined || params[param] === null) {
-        throw new Error(`Missing required parameter: ${param}`);
-      }
-      if (typeof params[param] !== 'number') {
-        throw new Error(`Parameter '${param}' must be a number`);
-      }
+  private async handleGetDeploymentStatus(
+    vercelToken: string,
+    params: any,
+    res: Response
+  ): Promise<void> {
+    // Validate required parameters
+    if (!params.deploymentId) {
+      throw new Error('Missing required parameter: deploymentId');
+    }
+
+    try {
+      const result = await this.deploymentService.getDeploymentStatus(
+        vercelToken,
+        params.deploymentId
+      );
+
+      const response = new BaseSuccessResponseDto(
+        {
+          deploymentId: result.deployment.id,
+          status: result.deployment.state,
+          deploymentUrl: `https://${result.deployment.url}`,
+          message: result.message,
+          isLive: result.isLive,
+          hasError: result.hasError,
+          createdAt: new Date(result.deployment.createdAt).toISOString(),
+          inspectorUrl: result.deployment.inspectorUrl,
+          tool_type: 'deployment_status',
+        },
+        'mixed'
+      );
+
+      res.json(response);
+    } catch (error: any) {
+      const errorResponse = new BaseErrorResponseDto(
+        error.message,
+        400,
+        'Failed to get deployment status'
+      );
+      res.status(400).json(errorResponse);
     }
   }
 
   /**
-   * Validate parameters for character count tool
+   * Validate deployRepo parameters
    */
-  private validateCharacterCountParameters(params: any): void {
-    if (params.character === undefined || params.character === null) {
-      throw new Error('Missing required parameter: character');
+  private validateDeployRepoParameters(params: any): void {
+    if (!params.repoUrl) {
+      throw new Error('Missing required parameter: repoUrl');
     }
-    if (params.text === undefined || params.text === null) {
-      throw new Error('Missing required parameter: text');
+
+    if (typeof params.repoUrl !== 'string') {
+      throw new Error("Parameter 'repoUrl' must be a string");
     }
-    if (typeof params.character !== 'string') {
-      throw new Error("Parameter 'character' must be a string");
+
+    // Basic URL validation
+    if (!params.repoUrl.includes('github.com')) {
+      throw new Error("Parameter 'repoUrl' must be a valid GitHub repository URL");
     }
-    if (typeof params.text !== 'string') {
-      throw new Error("Parameter 'text' must be a string");
+
+    // Optional parameters validation
+    if (params.projectName && typeof params.projectName !== 'string') {
+      throw new Error("Parameter 'projectName' must be a string");
     }
-    if (params.character.length !== 1) {
-      throw new Error('Character parameter must be exactly one character');
+
+    if (params.framework && typeof params.framework !== 'string') {
+      throw new Error("Parameter 'framework' must be a string");
     }
   }
 
@@ -212,32 +193,4 @@ export class AppController {
     }
     return null;
   }
-
-  /**
-   * Check if tool is a calculator tool
-   */
-  private isCalculatorTool(toolName: string): boolean {
-    return this.getCalculatorTools().includes(toolName);
-  }
-
-  /**
-   * Check if tool is a GitHub tool
-   */
-  private isGitHubTool(toolName: string): boolean {
-    return this.getGitHubTools().includes(toolName);
-  }
-
-  /**
-   * Get list of calculator tools
-   */
-  private getCalculatorTools(): string[] {
-    return ['add', 'subtract', 'multiply', 'divide', 'power', 'sqrt', 'percentage', 'factorial', 'countCharacter'];
-  }
-
-  /**
-   * Get list of GitHub tools
-   */
-  private getGitHubTools(): string[] {
-    return ['listUserRepositories'];
-  }
-} 
+}

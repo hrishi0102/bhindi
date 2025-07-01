@@ -1,5 +1,4 @@
 import { GitHubService } from '@/services/githubService.js';
-import { BaseErrorResponseDto } from '@/types/agent.js';
 
 // Mock fetch globally
 global.fetch = jest.fn();
@@ -13,246 +12,176 @@ describe('GitHubService', () => {
     mockFetch.mockClear();
   });
 
-  describe('listUserRepositories', () => {
-    const mockRepositories = [
-      {
-        id: 1,
-        name: 'test-repo',
-        full_name: 'user/test-repo',
-        description: 'Test repository',
-        private: false,
-        html_url: 'https://github.com/user/test-repo',
-        language: 'TypeScript',
-        stargazers_count: 5,
-        forks_count: 2,
-        created_at: '2023-01-01T00:00:00Z',
-        updated_at: '2023-01-02T00:00:00Z',
-        pushed_at: '2023-01-02T12:00:00Z'
-      },
-      {
-        id: 2,
-        name: 'another-repo',
-        full_name: 'user/another-repo',
-        description: null,
-        private: true,
-        html_url: 'https://github.com/user/another-repo',
-        language: null,
-        stargazers_count: 0,
-        forks_count: 0,
-        created_at: '2023-01-03T00:00:00Z',
-        updated_at: '2023-01-04T00:00:00Z',
-        pushed_at: '2023-01-04T12:00:00Z'
-      }
-    ];
-
-    it('should return formatted repository list with default options', async () => {
-      const mockResponse = {
-        ok: true,
-        status: 200,
-        json: jest.fn().mockResolvedValue(mockRepositories)
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      const result = await githubService.listUserRepositories('valid-token');
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.github.com/user/repos?per_page=10&sort=updated&direction=desc&type=owner',
-        {
-          headers: {
-            'Authorization': 'Bearer valid-token',
-            'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'Bhindi-Agent-Starter/1.0'
-          }
-        }
-      );
-
-      expect(result.repositories).toHaveLength(2);
-      expect(result.repositories[0]).toEqual({
-        id: 1,
-        name: 'test-repo',
-        full_name: 'user/test-repo',
-        description: 'Test repository',
-        private: false,
-        html_url: 'https://github.com/user/test-repo',
-        language: 'TypeScript',
-        stargazers_count: 5,
-        forks_count: 2,
-        created_at: '2023-01-01T00:00:00Z',
-        updated_at: '2023-01-02T00:00:00Z',
-        pushed_at: '2023-01-02T12:00:00Z'
-      });
-
-      expect(result.repositories[1]).toEqual({
-        id: 2,
-        name: 'another-repo',
-        full_name: 'user/another-repo',
-        description: null,
-        private: true,
-        html_url: 'https://github.com/user/another-repo',
-        language: 'Unknown',
-        stargazers_count: 0,
-        forks_count: 0,
-        created_at: '2023-01-03T00:00:00Z',
-        updated_at: '2023-01-04T00:00:00Z',
-        pushed_at: '2023-01-04T12:00:00Z'
-      });
-
-      expect(result.total_count).toBe(2);
-      expect(result.message).toBe('Found 2 repositories for authenticated user');
+  describe('parseGitHubUrl', () => {
+    it('should parse standard GitHub HTTPS URL', () => {
+      const result = githubService.parseGitHubUrl('https://github.com/owner/repo');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo' });
     });
 
-    it('should handle custom options', async () => {
-      const mockResponse = {
-        ok: true,
-        status: 200,
-        json: jest.fn().mockResolvedValue([mockRepositories[0]])
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      const options = {
-        per_page: 5,
-        sort: 'created',
-        direction: 'asc',
-        type: 'public'
-      };
-
-      await githubService.listUserRepositories('valid-token', options);
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.github.com/user/repos?per_page=5&sort=created&direction=asc&type=public',
-        expect.any(Object)
-      );
+    it('should parse GitHub HTTPS URL with .git suffix', () => {
+      const result = githubService.parseGitHubUrl('https://github.com/owner/repo.git');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo' });
     });
 
-    it('should handle 401 authentication errors', async () => {
-      const mockResponse = {
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized'
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      try {
-        await githubService.listUserRepositories('invalid-token');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BaseErrorResponseDto);
-        expect((error as BaseErrorResponseDto).error.message).toBe('Invalid or expired GitHub token');
-        expect((error as BaseErrorResponseDto).error.code).toBe(401);
-      }
+    it('should parse GitHub SSH URL', () => {
+      const result = githubService.parseGitHubUrl('git@github.com:owner/repo.git');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo' });
     });
 
-    it('should handle 403 rate limit errors', async () => {
-      const mockResponse = {
-        ok: false,
-        status: 403,
-        statusText: 'Forbidden'
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      try {
-        await githubService.listUserRepositories('valid-token');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BaseErrorResponseDto);
-        expect((error as BaseErrorResponseDto).error.message).toBe('GitHub API rate limit exceeded or insufficient permissions');
-        expect((error as BaseErrorResponseDto).error.code).toBe(403);
-      }
+    it('should parse simple owner/repo format', () => {
+      const result = githubService.parseGitHubUrl('owner/repo');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo' });
     });
 
-    it('should handle other HTTP errors', async () => {
-      const mockResponse = {
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error'
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      try {
-        await githubService.listUserRepositories('valid-token');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BaseErrorResponseDto);
-        expect((error as BaseErrorResponseDto).error.message).toBe('GitHub API error: 500 Internal Server Error');
-        expect((error as BaseErrorResponseDto).error.code).toBe(500);
-      }
+    it('should handle URLs with trailing paths', () => {
+      const result = githubService.parseGitHubUrl('https://github.com/owner/repo/tree/main');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo' });
     });
 
-    it('should handle network errors', async () => {
-      mockFetch.mockRejectedValue(new Error('Network error'));
-
-      try {
-        await githubService.listUserRepositories('valid-token');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BaseErrorResponseDto);
-        expect((error as BaseErrorResponseDto).error.message).toBe('Failed to fetch repositories: Network error');
-        expect((error as BaseErrorResponseDto).error.code).toBe(500);
-      }
+    it('should throw error for invalid URLs', () => {
+      expect(() => {
+        githubService.parseGitHubUrl('invalid-url');
+      }).toThrow('Invalid GitHub repository URL: invalid-url');
     });
 
-    it('should handle empty repository list', async () => {
-      const mockResponse = {
-        ok: true,
-        status: 200,
-        json: jest.fn().mockResolvedValue([])
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      const result = await githubService.listUserRepositories('valid-token');
-
-      expect(result.repositories).toHaveLength(0);
-      expect(result.total_count).toBe(0);
-      expect(result.message).toBe('Found 0 repositories for authenticated user');
-    });
-
-    it('should handle repositories with null language', async () => {
-      const repoWithNullLanguage = {
-        ...mockRepositories[0],
-        language: null
-      };
-
-      const mockResponse = {
-        ok: true,
-        status: 200,
-        json: jest.fn().mockResolvedValue([repoWithNullLanguage])
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      const result = await githubService.listUserRepositories('valid-token');
-
-      expect(result.repositories[0].language).toBe('Unknown');
-    });
-
-    it('should handle repositories with null description', async () => {
-      const repoWithNullDescription = {
-        ...mockRepositories[0],
-        description: null
-      };
-
-      const mockResponse = {
-        ok: true,
-        status: 200,
-        json: jest.fn().mockResolvedValue([repoWithNullDescription])
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      const result = await githubService.listUserRepositories('valid-token');
-
-      expect(result.repositories[0].description).toBe(null);
-    });
-
-    it('should handle BaseErrorResponseDto properly', async () => {
-      const mockResponse = {
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized'
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      try {
-        await githubService.listUserRepositories('invalid-token');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BaseErrorResponseDto);
-        expect((error as BaseErrorResponseDto).error.message).toBe('Invalid or expired GitHub token');
-        expect((error as BaseErrorResponseDto).error.code).toBe(401);
-      }
+    it('should throw error for non-GitHub URLs', () => {
+      expect(() => {
+        githubService.parseGitHubUrl('https://gitlab.com/owner/repo');
+      }).toThrow('Invalid GitHub repository URL: https://gitlab.com/owner/repo');
     });
   });
-}); 
+
+  describe('validateRepository', () => {
+    const mockRepoData = {
+      owner: { login: 'testowner' },
+      name: 'testrepo',
+      default_branch: 'main',
+      private: false,
+      full_name: 'testowner/testrepo',
+    };
+
+    beforeEach(() => {
+      // Mock the Octokit constructor and methods
+      jest.doMock('@octokit/rest', () => ({
+        Octokit: jest.fn().mockImplementation(() => ({
+          rest: {
+            repos: {
+              get: jest.fn(),
+            },
+          },
+        })),
+      }));
+    });
+
+    it('should return repository info for valid public repository', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockResolvedValue({
+        data: mockRepoData,
+      });
+
+      const result = await githubService.validateRepository(
+        'valid-token',
+        'https://github.com/testowner/testrepo'
+      );
+
+      expect(result).toEqual({
+        owner: 'testowner',
+        repo: 'testrepo',
+        defaultBranch: 'main',
+        isPrivate: false,
+        fullName: 'testowner/testrepo',
+      });
+    });
+
+    it('should return repository info for private repository', async () => {
+      const privateRepoData = { ...mockRepoData, private: true };
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockResolvedValue({
+        data: privateRepoData,
+      });
+
+      const result = await githubService.validateRepository('valid-token', 'testowner/testrepo');
+
+      expect(result).toEqual({
+        owner: 'testowner',
+        repo: 'testrepo',
+        defaultBranch: 'main',
+        isPrivate: true,
+        fullName: 'testowner/testrepo',
+      });
+    });
+
+    it('should throw error for 404 (repository not found)', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockRejectedValue({ status: 404 });
+
+      await expect(
+        githubService.validateRepository('valid-token', 'owner/nonexistent')
+      ).rejects.toThrow('Repository not found or not accessible: owner/nonexistent');
+    });
+
+    it('should throw error for 401 (invalid token)', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockRejectedValue({ status: 401 });
+
+      await expect(githubService.validateRepository('invalid-token', 'owner/repo')).rejects.toThrow(
+        'GitHub token is invalid or expired'
+      );
+    });
+
+    it('should throw error for 403 (insufficient permissions)', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockRejectedValue({ status: 403 });
+
+      await expect(
+        githubService.validateRepository('limited-token', 'owner/private-repo')
+      ).rejects.toThrow('GitHub token does not have permission to access this repository');
+    });
+
+    it('should throw error for other API errors', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockRejectedValue({
+        status: 500,
+        message: 'Internal Server Error',
+      });
+
+      await expect(githubService.validateRepository('valid-token', 'owner/repo')).rejects.toThrow(
+        'GitHub API error: Internal Server Error'
+      );
+    });
+
+    it('should handle different URL formats', async () => {
+      const { Octokit } = await import('@octokit/rest');
+      const mockOctokit = new Octokit();
+      (mockOctokit.rest.repos.get as unknown as jest.Mock).mockResolvedValue({
+        data: mockRepoData,
+      });
+
+      // Test with SSH URL
+      const result1 = await githubService.validateRepository(
+        'valid-token',
+        'git@github.com:testowner/testrepo.git'
+      );
+      expect(result1.owner).toBe('testowner');
+      expect(result1.repo).toBe('testrepo');
+
+      // Test with HTTPS URL with .git
+      const result2 = await githubService.validateRepository(
+        'valid-token',
+        'https://github.com/testowner/testrepo.git'
+      );
+      expect(result2.owner).toBe('testowner');
+      expect(result2.repo).toBe('testrepo');
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+});
